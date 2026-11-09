@@ -107,7 +107,7 @@ table{border-collapse:collapse;width:100%}
 
 <input type="file" id="camIn" accept="image/*" capture="environment" class="hide">
 <input type="file" id="galIn" accept="image/*" class="hide">
-<input type="file" id="impIn" accept=".json,application/json" class="hide">
+<input type="file" id="impIn" accept=".json,application/json" multiple class="hide">
 <input type="file" id="logoIn" accept="image/*" class="hide">
 <input type="file" id="mapIn" multiple class="hide">
 
@@ -151,7 +151,7 @@ const TYPES=[
 const ACTS=['Không cần xử lý','Nhắc nhở tại chỗ','Lập biên bản','Báo cáo Trạm/Ban','Phối hợp Kiểm lâm','Báo chính quyền xã'];
 const VEH=['Đi bộ','Xe máy','Ô tô','Thuyền'];
 const typeOf=k=>TYPES.find(t=>t[0]===k)||TYPES[TYPES.length-1];
-const APP_VER='1.1 (09/11/2026)';
+const APP_VER='1.2 (09/11/2026)';
 const CREDIT_HTML='<div class="mu" style="margin-top:8px;font-size:12.5px">Thiết kế và Phát triển: <b>Nguyễn Văn Tuấn</b> – PTP. HC-BV&amp;PTR<br>BQL rừng phòng hộ Như Thanh</div>';
 
 /* ========== CÀI ĐẶT ========== */
@@ -159,6 +159,8 @@ const SKEY='tuantra_bvr_settings_v1';
 const DEF={name:'',role:'',unit:TRAM[0],title:'Tuần tra BVR',sub:'',members:'',logo:'',cm:105,minDist:8,maxAcc:50,autoSave:true,maxDim:1920,quality:0.85,geocode:true,theme:''};
 let S={...DEF};
 try{S={...DEF,...JSON.parse(localStorage.getItem(SKEY)||'{}')}}catch(e){}
+// mã máy (để ghi nhận ngoài chuyến của các máy khác nhau không trùng khi Trạm/Ban gộp dữ liệu)
+const devId=()=>{if(!S.dev){S.dev=Math.random().toString(36).slice(2,8);saveS()}return S.dev};
 const saveS=()=>{try{localStorage.setItem(SKEY,JSON.stringify(S))}catch(e){toast('Không lưu được cài đặt (bộ nhớ trình duyệt bị chặn)')}};
 if(S.theme)document.documentElement.dataset.theme=S.theme;
 
@@ -358,8 +360,8 @@ function renderPatrol(){
  <div class="card"><h2>Ghi nhận trong chuyến</h2><div class="list" id="obsList"></div></div>`;
  $('#aCam').onclick=openCam;$('#aNote').onclick=()=>openObs(null);
  $('#aMap').onclick=()=>{const m=$('#liveMap');m.classList.toggle('hide');if(!m.classList.contains('hide'))drawMap(m,p)};
- if($('#aPause'))$('#aPause').onclick=()=>{p.status='paused';put('patrols',p);keepAwake(false);renderPatrol()};
- if($('#aResume'))$('#aResume').onclick=()=>{p.status='active';p.track.push([]);put('patrols',p);keepAwake(true);renderPatrol()};
+ if($('#aPause'))$('#aPause').onclick=()=>{p.status='paused';p.pausedAt=Date.now();put('patrols',p);keepAwake(false);renderPatrol()};
+ if($('#aResume'))$('#aResume').onclick=()=>{p.status='active';if(p.pausedAt){p.pausedMs=(p.pausedMs||0)+(Date.now()-p.pausedAt);p.pausedAt=null}p.track.push([]);put('patrols',p);keepAwake(true);renderPatrol()};
  $('#aEnd').onclick=endPatrol;
  obsListHTML(p,$('#obsList'));updLive();
 }
@@ -445,7 +447,7 @@ $('#obsSave').onclick=async()=>{
  try{
   let p=active;
   if(!p){// ghi nhận ngoài chuyến: gom theo ngày
-   const d=new Date(),id='L'+d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate());
+   const d=new Date(),id='L'+d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+'_'+devId();
    p=await get('patrols',id)||{id,title:'Ghi nhận ngoài chuyến '+fDate(Date.now()),area:'',members:S.name?[S.name]:[],vehicle:'',unit:S.unit,leader:S.name,start:Date.now(),end:Date.now(),status:'done',track:[],obs:[],distance:0,loose:true};
   }
   const f0=cur.shots[0]?.fix||(await freshFix());
@@ -493,19 +495,98 @@ async function renderPhotos(){
 }
 
 /* ========== TAB NHẬT KÝ ========== */
+/* ========== TỔNG HỢP THEO KỲ / CÁ NHÂN / TRẠM / ĐƠN VỊ ========== */
+const KY=[['tuan','Tuần'],['thang','Tháng'],['quy','Quý'],['6thang','6 tháng'],['nam','Năm'],['tuy','Tùy chọn']];
+let SUM={ky:'thang',off:0,scope:'all',from:'',to:''};
+try{Object.assign(SUM,JSON.parse(localStorage.getItem('tuantra_sum')||'{}'),{off:0})}catch(e){}
+const durOf=p=>Math.max(0,(p.end||Date.now())-p.start-(p.pausedMs||0)-(p.status==='paused'&&p.pausedAt?Date.now()-p.pausedAt:0));
+const hrs=ms=>(ms/3600000).toFixed(1).replace('.',',');
+const kmN=m=>(m/1000).toFixed(2).replace('.',',');
+const normName=s=>String(s||'').trim().replace(/\s+/g,' ');
+function isoWeek(d){const t=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));const n=t.getUTCDay()||7;t.setUTCDate(t.getUTCDate()+4-n);const y=new Date(Date.UTC(t.getUTCFullYear(),0,1));return Math.ceil(((t-y)/864e5+1)/7)}
+function periodRange(ky,off){
+ const n=new Date();let a,b,label;
+ if(ky==='tuan'){const d=new Date(n.getFullYear(),n.getMonth(),n.getDate());const wd=(d.getDay()+6)%7;a=new Date(d.getFullYear(),d.getMonth(),d.getDate()-wd+7*off);b=new Date(a.getFullYear(),a.getMonth(),a.getDate()+7);
+  label=`Tuần ${isoWeek(a)} (${fDate(a).slice(0,5)} – ${fDate(b-1)})`}
+ else if(ky==='thang'){a=new Date(n.getFullYear(),n.getMonth()+off,1);b=new Date(a.getFullYear(),a.getMonth()+1,1);label=`Tháng ${a.getMonth()+1}/${a.getFullYear()}`}
+ else if(ky==='quy'){const q=Math.floor(n.getMonth()/3)+off;a=new Date(n.getFullYear(),q*3,1);b=new Date(a.getFullYear(),a.getMonth()+3,1);label=`Quý ${['I','II','III','IV'][Math.floor(a.getMonth()/3)]}/${a.getFullYear()}`}
+ else if(ky==='6thang'){const h=Math.floor(n.getMonth()/6)+off;a=new Date(n.getFullYear(),h*6,1);b=new Date(a.getFullYear(),a.getMonth()+6,1);label=`6 tháng ${a.getMonth()?'cuối':'đầu'} năm ${a.getFullYear()}`}
+ else if(ky==='nam'){a=new Date(n.getFullYear()+off,0,1);b=new Date(a.getFullYear()+1,0,1);label=`Năm ${a.getFullYear()}`}
+ else{a=SUM.from?new Date(SUM.from+'T00:00'):new Date(n.getFullYear(),n.getMonth(),1);b=SUM.to?new Date(new Date(SUM.to+'T00:00').getTime()+864e5):new Date(n.getFullYear(),n.getMonth(),n.getDate()+1);label=`Từ ${fDate(a)} đến ${fDate(b-1)}`}
+ return {a:+a,b:+b,label};
+}
+// Gom số liệu. scope: 'all' | 'u:<Trạm>' | 'p:<Họ tên>'
+function summarize(ps,r,scope){
+ const inR=t=>t>=r.a&&t<r.b;
+ const pAll=ps.filter(p=>!p.loose&&p.start>=r.a&&p.start<r.b);
+ const obsAll=[];ps.forEach(p=>p.obs.forEach(o=>{if(inR(o.ts))obsAll.push({o,p})}));
+ const who=(p)=>[...new Set([p.leader,...(p.members||[])].map(normName).filter(Boolean))];
+ let pats=pAll,obs=obsAll;
+ if(scope.startsWith('u:')){const u=scope.slice(2);pats=pAll.filter(p=>(p.unit||'')===u);obs=obsAll.filter(x=>(x.p.unit||'')===u)}
+ if(scope.startsWith('p:')){const nm=scope.slice(2);pats=pAll.filter(p=>who(p).includes(nm));obs=obsAll.filter(x=>normName(x.o.by||x.p.leader)===nm)}
+ const tot={chuyen:pats.length,km:pats.reduce((s,p)=>s+(p.distance||0),0),ms:pats.reduce((s,p)=>s+durOf(p),0),gn:obs.length,vv:obs.filter(x=>x.o.type!=='tt').length,anh:obs.reduce((s,x)=>s+(x.o.photoIds?.length||0),0),
+  nguoi:new Set(pats.flatMap(who)).size,ngay:new Set(pats.map(p=>fDate(p.start))).size};
+ // theo Trạm
+ const U={};const uRow=u=>U[u]=U[u]||{u,chuyen:0,km:0,ms:0,gn:0,vv:0,nguoi:new Set()};
+ pats.forEach(p=>{const x=uRow(p.unit||'(chưa rõ)');x.chuyen++;x.km+=p.distance||0;x.ms+=durOf(p);who(p).forEach(n=>x.nguoi.add(n))});
+ obs.forEach(({o,p})=>{const x=uRow(p.unit||'(chưa rõ)');x.gn++;if(o.type!=='tt')x.vv++});
+ // theo cá nhân (mọi người trong tổ đều được tính chuyến/giờ/km; ghi nhận tính cho người ghi)
+ const P={};const pRow=n=>P[n]=P[n]||{n,units:{},chuyen:0,chuTri:0,km:0,ms:0,gn:0,vv:0};
+ pats.forEach(p=>who(p).forEach(n=>{const x=pRow(n);x.chuyen++;if(normName(p.leader)===n)x.chuTri++;x.km+=p.distance||0;x.ms+=durOf(p);x.units[p.unit||'']=(x.units[p.unit||'']||0)+1}));
+ obs.forEach(({o,p})=>{const n=normName(o.by||p.leader);if(!n)return;const x=pRow(n);x.gn++;if(o.type!=='tt')x.vv++;x.units[p.unit||'']=(x.units[p.unit||'']||0)+(x.chuyen?0:1)});
+ const persons=Object.values(P).map(x=>({...x,unit:Object.entries(x.units).sort((a,b)=>b[1]-a[1])[0]?.[0]||''}));
+ if(scope.startsWith('p:')){const nm=scope.slice(2);persons.splice(0,persons.length,...persons.filter(x=>x.n===nm))}
+ if(scope.startsWith('u:')){const u=scope.slice(2);for(let i=persons.length-1;i>=0;i--)if(persons[i].unit!==u&&!pats.some(p=>p.unit===u&&who(p).includes(persons[i].n)))persons.splice(i,1)}
+ // theo loại sự việc
+ const T={};obs.forEach(({o})=>T[o.type]=(T[o.type]||0)+1);
+ return {tot,units:Object.values(U).sort((a,b)=>TRAM.indexOf(a.u)-TRAM.indexOf(b.u)),persons:persons.sort((a,b)=>(TRAM.indexOf(a.unit)-TRAM.indexOf(b.unit))||b.ms-a.ms),types:TYPES.filter(t=>T[t[0]]).map(t=>({t,n:T[t[0]]})),
+  incidents:obs.filter(x=>x.o.type!=='tt').sort((a,b)=>a.o.ts-b.o.ts),pats:pats.sort((a,b)=>a.start-b.start)};
+}
+const scopeLabel=s=>s==='all'?'Toàn đơn vị (BQL rừng phòng hộ Như Thanh)':s.startsWith('u:')?s.slice(2):'Cá nhân: '+s.slice(2);
 async function renderLog(){
  const el=$('#tab-log');const ps=(await all('patrols')).sort((a,b)=>b.start-a.start);
- const now=new Date(),mo=ps.filter(p=>{const d=new Date(p.start);return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()});
- const real=mo.filter(p=>!p.loose);
- el.innerHTML=`<div class="card"><h2>Tháng ${now.getMonth()+1}/${now.getFullYear()}</h2><div class="stats">
-  <div class="stat"><b>${real.length}</b><span>Chuyến tuần tra</span></div>
-  <div class="stat"><b>${fKm(real.reduce((s,p)=>s+p.distance,0))}</b><span>Quãng đường</span></div>
-  <div class="stat"><b>${(real.reduce((s,p)=>s+((p.end||Date.now())-p.start),0)/3600000).toFixed(1).replace('.',',')}</b><span>Giờ tuần tra</span></div>
-  <div class="stat"><b>${mo.reduce((s,p)=>s+p.obs.length,0)}</b><span>Ghi nhận</span></div></div>
-  <div class="row" style="margin-top:10px"><button class="btn sec sm" id="lgCsv">⬇️ Tổng hợp tháng (Excel CSV)</button><button class="btn sec sm" id="lgAll">📦 Xuất gói dữ liệu</button></div></div>
- <div class="card"><h2>Các chuyến</h2><div class="list">${ps.length?ps.map(p=>`<div class="it" data-p="${p.id}" style="cursor:pointer"><div style="font-size:26px">${p.loose?'📸':p.status==='done'?'✅':'🟢'}</div><div class="t"><b>${esc(p.title)}</b><div class="mu">${fDT(p.start)}${p.loose?'':' · '+fDur((p.end||Date.now())-p.start)+' · '+fKm(p.distance)} · ${p.obs.length} ghi nhận</div><div class="mu">${esc(p.area||'')}</div></div><div>›</div></div>`).join(''):'<div class="mu">Chưa có chuyến nào.</div>'}</div></div>`;
+ try{localStorage.setItem('tuantra_sum',JSON.stringify({ky:SUM.ky,scope:SUM.scope,from:SUM.from,to:SUM.to}))}catch(e){}
+ const r=periodRange(SUM.ky,SUM.off),R=summarize(ps,r,SUM.scope);
+ const units=[...new Set(ps.map(p=>p.unit).filter(Boolean))].sort((a,b)=>TRAM.indexOf(a)-TRAM.indexOf(b));
+ const people=[...new Set(ps.flatMap(p=>[p.leader,...(p.members||[])]).map(normName).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'vi'));
+ const t=R.tot,src=[...new Set(ps.map(p=>normName(p.leader)).filter(Boolean))];
+ const th='style="text-align:left;padding:5px 4px;border-bottom:1px solid var(--bd);font-size:12.5px;color:var(--mu)"',td='style="padding:5px 4px;border-bottom:1px solid var(--bd);font-size:13px"',tdn='style="padding:5px 4px;border-bottom:1px solid var(--bd);font-size:13px;text-align:right"';
+ const listPs=ps.filter(p=>p.loose?(p.obs.some(o=>o.ts>=r.a&&o.ts<r.b)):(p.start>=r.a&&p.start<r.b));
+ el.innerHTML=`<div class="card"><h2>📊 Tổng hợp kết quả tuần tra</h2>
+  <div class="chips" id="kyBox">${KY.map(k=>`<button class="chip ${k[0]===SUM.ky?'on':''}" data-k="${k[0]}">${k[1]}</button>`).join('')}</div>
+  ${SUM.ky==='tuy'?`<div class="row" style="margin-top:8px"><div><label>Từ ngày</label><input type="date" id="sFrom" value="${SUM.from}"></div><div><label>Đến ngày</label><input type="date" id="sTo" value="${SUM.to}"></div></div>`
+   :`<div style="display:flex;align-items:center;gap:8px;margin-top:10px"><button class="btn sec sm" id="kPrev">‹</button><b style="flex:1;text-align:center">${r.label}</b><button class="btn sec sm" id="kNext" ${SUM.off>=0?'disabled style="opacity:.4"':''}>›</button></div>`}
+  <label>Phạm vi</label><select id="scopeSel"><option value="all">Toàn đơn vị</option>
+   <optgroup label="Theo Trạm">${units.map(u=>`<option value="u:${esc(u)}" ${SUM.scope==='u:'+u?'selected':''}>${esc(u)}</option>`).join('')}</optgroup>
+   <optgroup label="Theo cá nhân">${people.map(n=>`<option value="p:${esc(n)}" ${SUM.scope==='p:'+n?'selected':''}>${esc(n)}</option>`).join('')}</optgroup></select>
+  <div class="stats" style="margin-top:10px;grid-template-columns:repeat(3,1fr)">
+   <div class="stat"><b>${t.chuyen}</b><span>Chuyến tuần tra</span></div>
+   <div class="stat"><b>${hrs(t.ms)}</b><span>Giờ tuần tra</span></div>
+   <div class="stat"><b>${kmN(t.km)}</b><span>Km (GPS)</span></div>
+   <div class="stat"><b>${t.ngay}</b><span>Ngày có tuần tra</span></div>
+   <div class="stat"><b>${t.gn}</b><span>Ghi nhận</span></div>
+   <div class="stat"><b style="color:${t.vv?'var(--red)':'var(--g2)'}">${t.vv}</b><span>Sự việc, vi phạm</span></div></div>
+  ${R.units.length>1||SUM.scope==='all'?`<h3 style="font-size:14px;margin:14px 0 4px">Theo Trạm</h3><div style="overflow-x:auto"><table><tr><th ${th}>Đơn vị</th><th ${th}>Chuyến</th><th ${th}>Giờ</th><th ${th}>Km</th><th ${th}>Người</th><th ${th}>Ghi nhận</th><th ${th}>Sự việc</th></tr>
+   ${R.units.map(x=>`<tr><td ${td}>${esc(x.u.replace('Trạm QLBVR ','Trạm '))}</td><td ${tdn}>${x.chuyen}</td><td ${tdn}>${hrs(x.ms)}</td><td ${tdn}>${kmN(x.km)}</td><td ${tdn}>${x.nguoi.size}</td><td ${tdn}>${x.gn}</td><td ${tdn}>${x.vv}</td></tr>`).join('')||`<tr><td ${td} colspan="7" class="mu">Không có số liệu</td></tr>`}</table></div>`:''}
+  <h3 style="font-size:14px;margin:14px 0 4px">Theo cá nhân</h3><div style="overflow-x:auto"><table><tr><th ${th}>Họ tên</th><th ${th}>Trạm</th><th ${th}>Chuyến (chủ trì)</th><th ${th}>Giờ</th><th ${th}>Km</th><th ${th}>Ghi nhận</th><th ${th}>Sự việc</th></tr>
+   ${R.persons.map(x=>`<tr><td ${td}>${esc(x.n)}</td><td ${td}>${esc((x.unit||'').replace('Trạm QLBVR ',''))}</td><td ${tdn}>${x.chuyen} (${x.chuTri})</td><td ${tdn}>${hrs(x.ms)}</td><td ${tdn}>${kmN(x.km)}</td><td ${tdn}>${x.gn}</td><td ${tdn}>${x.vv}</td></tr>`).join('')||`<tr><td ${td} colspan="7" class="mu">Không có số liệu</td></tr>`}</table></div>
+  ${R.types.length?`<h3 style="font-size:14px;margin:14px 0 4px">Theo loại ghi nhận</h3><div class="chips">${R.types.map(x=>`<span class="chip">${x.t[1]} ${esc(x.t[2])}: <b>${x.n}</b></span>`).join('')}</div>`:''}
+  <div class="row" style="margin-top:14px"><button class="btn" id="sumPrint">🖨️ Báo cáo (in / PDF)</button><button class="btn sec" id="sumCsv">📊 Xuất Excel</button></div>
+  <div class="row" style="margin-top:8px"><button class="btn sec sm" id="sumSend">📤 Gửi số liệu kỳ này (không ảnh)</button><button class="btn sec sm" id="sumImp">📥 Nhập gói của anh em</button></div>
+  <p class="mu" style="margin-bottom:0">Số liệu trên máy này gồm ${src.length} người: ${esc(src.join(', ')||'—')}. Để tổng hợp cả Trạm/đơn vị: từng người bấm <b>Gửi số liệu</b>, người tổng hợp bấm <b>Nhập gói</b> (chọn được nhiều file một lúc).</p></div>
+ <div class="card"><h2>Các chuyến trong kỳ (${listPs.length})</h2><div class="list">${listPs.length?listPs.map(p=>`<div class="it" data-p="${p.id}" style="cursor:pointer"><div style="font-size:26px">${p.loose?'📸':p.status==='done'?'✅':'🟢'}</div><div class="t"><b>${esc(p.title)}</b><div class="mu">${fDT(p.start)}${p.loose?'':' · '+fDur(durOf(p))+' · '+fKm(p.distance)} · ${p.obs.length} ghi nhận</div><div class="mu">${esc([p.leader,(p.unit||'').replace('Trạm QLBVR ','Trạm '),p.area].filter(Boolean).join(' · '))}</div></div><div>›</div></div>`).join(''):'<div class="mu">Không có chuyến nào trong kỳ.</div>'}</div>
+  <div class="row" style="margin-top:10px"><button class="btn sec sm" id="lgAll">📦 Xuất gói đầy đủ (kèm ảnh) các chuyến trong kỳ</button></div></div>`;
  el.querySelectorAll('[data-p]').forEach(d=>d.onclick=()=>openPatrol(d.dataset.p));
- $('#lgCsv').onclick=()=>monthCSV(mo);$('#lgAll').onclick=()=>exportBundle(ps.map(p=>p.id),'TuanTra_TatCa_'+fileStamp(Date.now()));
+ el.querySelectorAll('#kyBox .chip').forEach(b=>b.onclick=()=>{SUM.ky=b.dataset.k;SUM.off=0;renderLog()});
+ if($('#kPrev')){$('#kPrev').onclick=()=>{SUM.off--;renderLog()};$('#kNext').onclick=()=>{if(SUM.off<0){SUM.off++;renderLog()}}}
+ if($('#sFrom')){$('#sFrom').onchange=e=>{SUM.from=e.target.value;renderLog()};$('#sTo').onchange=e=>{SUM.to=e.target.value;renderLog()}}
+ $('#scopeSel').value=SUM.scope;if($('#scopeSel').value!==SUM.scope){SUM.scope='all';$('#scopeSel').value='all'}
+ $('#scopeSel').onchange=e=>{SUM.scope=e.target.value;renderLog()};
+ $('#sumPrint').onclick=()=>sumReport(r,R,SUM.scope);
+ $('#sumCsv').onclick=()=>sumCSV(r,R,SUM.scope);
+ $('#sumSend').onclick=()=>{const ids=listPs.map(p=>p.id);if(!ids.length)return toast('Kỳ này chưa có dữ liệu');exportBundle(ids,'SoLieu_'+(S.name||'').replace(/\s+/g,'')+'_'+r.label.replace(/[^\dA-Za-zÀ-ỹ]+/g,'-'),false)};
+ $('#sumImp').onclick=()=>{$('#impIn').value='';$('#impIn').click()};
+ $('#lgAll').onclick=()=>{if(!listPs.length)return toast('Kỳ này chưa có dữ liệu');exportBundle(listPs.map(p=>p.id),'TuanTra_'+r.label.replace(/[^\dA-Za-zÀ-ỹ]+/g,'-')+'_'+(S.name||'').replace(/\s+/g,''))};
 }
 async function openPatrol(id){
  const p=await get('patrols',id);if(!p)return;const el=$('#tab-log');
@@ -586,16 +667,49 @@ function exportCSV(ps,name){
  ps.forEach(p=>p.obs.forEach(o=>{const v=o.lat!=null?toVN2000(o.lat,o.lng,S.cm):{x:'',y:''};rows.push([p.title,fDate(o.ts),fTime(o.ts),typeOf(o.type)[2],o.note,o.qty,o.level,o.action,o.place,o.addr,o.lat,o.lng,o.acc,v.x,v.y,o.photoIds.length,o.by])}));
  download(new Blob(['﻿'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n')],{type:'text/csv'}),name+'.csv');
 }
-function monthCSV(ps){
- const rows=[['STT','Ngày','Bắt đầu','Kết thúc','Nội dung','Khu vực','Thành viên','Phương tiện','Quãng đường (km)','Thời gian (giờ)','Số ghi nhận','Ghi nhận vi phạm/sự việc']];
- ps.filter(p=>!p.loose).sort((a,b)=>a.start-b.start).forEach((p,i)=>rows.push([i+1,fDate(p.start),fTime(p.start),p.end?fTime(p.end):'',p.title,p.area,p.members.join('; '),p.vehicle,(p.distance/1000).toFixed(2),(((p.end||Date.now())-p.start)/3600000).toFixed(1),p.obs.length,p.obs.filter(o=>o.type!=='tt').map(o=>typeOf(o.type)[2]+(o.note?': '+o.note:'')).join(' | ')]));
- download(new Blob(['﻿'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n')],{type:'text/csv'}),'TongHop_TuanTra_'+fileStamp(Date.now()).slice(0,6)+'.csv');
- exportCSV(ps,'GhiNhan_Thang_'+fileStamp(Date.now()).slice(0,6));
+// Excel (CSV, mở được bằng Excel; dấu thập phân phẩy)
+function sumCSV(r,R,scope){
+ const n=v=>String(v).replace('.',','),rows=[];
+ rows.push(['TỔNG HỢP KẾT QUẢ TUẦN TRA, KIỂM TRA BẢO VỆ RỪNG']);rows.push(['Kỳ',r.label]);rows.push(['Phạm vi',scopeLabel(scope)]);rows.push(['Ngày lập',fDT(Date.now()),'Người lập',S.name]);rows.push([]);
+ const t=R.tot;rows.push(['I. TỔNG QUÁT']);rows.push(['Số chuyến','Số giờ','Số km (GPS)','Số ngày có tuần tra','Số người tham gia','Số ghi nhận','Số sự việc/vi phạm','Số ảnh']);
+ rows.push([t.chuyen,n(hrs(t.ms)),n(kmN(t.km)),t.ngay,t.nguoi,t.gn,t.vv,t.anh]);rows.push([]);
+ rows.push(['II. THEO TRẠM']);rows.push(['STT','Đơn vị','Số chuyến','Số giờ','Số km','Số người','Ghi nhận','Sự việc']);
+ R.units.forEach((x,i)=>rows.push([i+1,x.u,x.chuyen,hrs(x.ms),kmN(x.km),x.nguoi.size,x.gn,x.vv]));rows.push([]);
+ rows.push(['III. THEO CÁ NHÂN']);rows.push(['STT','Họ và tên','Trạm','Số chuyến tham gia','Trong đó chủ trì','Số giờ','Số km','Ghi nhận','Sự việc']);
+ R.persons.forEach((x,i)=>rows.push([i+1,x.n,x.unit,x.chuyen,x.chuTri,hrs(x.ms),kmN(x.km),x.gn,x.vv]));rows.push([]);
+ rows.push(['IV. THEO LOẠI GHI NHẬN']);R.types.forEach(x=>rows.push([x.t[2],x.n]));rows.push([]);
+ rows.push(['V. SỰ VIỆC, VI PHẠM PHÁT HIỆN']);rows.push(['STT','Ngày','Giờ','Loại','Nội dung','SL/DT','Mức độ','Địa danh','VN2000 X','VN2000 Y','Xử lý','Người ghi','Trạm']);
+ R.incidents.forEach(({o,p},i)=>{const v=o.lat!=null?toVN2000(o.lat,o.lng,S.cm):{x:'',y:''};rows.push([i+1,fDate(o.ts),fTime(o.ts),typeOf(o.type)[2],o.note,o.qty,o.level,o.place,v.x,v.y,o.action,o.by||p.leader,p.unit])});rows.push([]);
+ rows.push(['VI. DANH SÁCH CHUYẾN TUẦN TRA']);rows.push(['STT','Ngày','Bắt đầu','Kết thúc','Nội dung','Khu vực','Trạm','Chủ trì','Thành viên','Phương tiện','Km','Giờ','Ghi nhận']);
+ R.pats.forEach((p,i)=>rows.push([i+1,fDate(p.start),fTime(p.start),p.end?fTime(p.end):'',p.title,p.area,p.unit,p.leader,(p.members||[]).join('; '),p.vehicle,kmN(p.distance||0),hrs(durOf(p)),p.obs.length]));
+ download(new Blob(['﻿'+rows.map(x=>x.map(csvCell).join(',')).join('\r\n')],{type:'text/csv'}),'TongHop_TuanTra_'+r.label.replace(/[^\dA-Za-zÀ-ỹ]+/g,'-')+'.csv');
+}
+// Báo cáo in / PDF
+function sumReport(r,R,scope){
+ const t=R.tot,isU=scope.startsWith('u:'),isP=scope.startsWith('p:'),unitHdr=isU?scope.slice(2):isP?(R.persons[0]?.unit||S.unit):'';
+ const d=new Date(),cell='style="text-align:right"';
+ $('#print').innerHTML=`
+ <table style="border:0;width:100%"><tr><td style="border:0;text-align:center;width:45%">SỞ NÔNG NGHIỆP VÀ MÔI TRƯỜNG<br><b>BAN QL RỪNG PHÒNG HỘ NHƯ THANH</b>${unitHdr?'<br><b>'+esc(unitHdr.toUpperCase())+'</b>':''}</td><td style="border:0;text-align:center"><b>CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</b><br><b>Độc lập - Tự do - Hạnh phúc</b><br><i>Như Thanh, ngày ${d.getDate()} tháng ${d.getMonth()+1} năm ${d.getFullYear()}</i></td></tr></table>
+ <h3 style="text-align:center;margin:18px 0 2px">BÁO CÁO TỔNG HỢP<br>KẾT QUẢ TUẦN TRA, KIỂM TRA BẢO VỆ RỪNG</h3>
+ <p style="text-align:center;margin:0 0 14px"><i>${esc(r.label)} – ${esc(scopeLabel(scope))}</i></p>
+ <p><b>I. KẾT QUẢ CHUNG</b></p>
+ <p>Trong kỳ đã tổ chức <b>${t.chuyen}</b> chuyến tuần tra, kiểm tra trong <b>${t.ngay}</b> ngày, với <b>${t.nguoi}</b> người tham gia; tổng thời gian <b>${hrs(t.ms)}</b> giờ, quãng đường ghi nhận bằng GPS <b>${kmN(t.km)}</b> km. Ghi nhận <b>${t.gn}</b> nội dung (${t.anh} ảnh hiện trường), trong đó <b>${t.vv}</b> sự việc, vi phạm${t.vv?'':' (không phát hiện vi phạm)'}.</p>
+ ${!isP?`<p><b>II. KẾT QUẢ THEO TRẠM</b></p><table><tr><th>TT</th><th>Đơn vị</th><th>Số chuyến</th><th>Số giờ</th><th>Số km</th><th>Số người</th><th>Ghi nhận</th><th>Sự việc</th></tr>
+  ${R.units.map((x,i)=>`<tr><td>${i+1}</td><td>${esc(x.u)}</td><td ${cell}>${x.chuyen}</td><td ${cell}>${hrs(x.ms)}</td><td ${cell}>${kmN(x.km)}</td><td ${cell}>${x.nguoi.size}</td><td ${cell}>${x.gn}</td><td ${cell}>${x.vv}</td></tr>`).join('')}
+  <tr><td></td><td><b>Cộng</b></td><td ${cell}><b>${t.chuyen}</b></td><td ${cell}><b>${hrs(t.ms)}</b></td><td ${cell}><b>${kmN(t.km)}</b></td><td ${cell}><b>${t.nguoi}</b></td><td ${cell}><b>${t.gn}</b></td><td ${cell}><b>${t.vv}</b></td></tr></table>`:''}
+ <p><b>${isP?'II':'III'}. KẾT QUẢ THEO CÁ NHÂN</b></p><table><tr><th>TT</th><th>Họ và tên</th><th>Trạm</th><th>Số chuyến<br>(chủ trì)</th><th>Số giờ</th><th>Số km</th><th>Ghi nhận</th><th>Sự việc</th></tr>
+  ${R.persons.map((x,i)=>`<tr><td>${i+1}</td><td>${esc(x.n)}</td><td>${esc((x.unit||'').replace('Trạm QLBVR ',''))}</td><td ${cell}>${x.chuyen} (${x.chuTri})</td><td ${cell}>${hrs(x.ms)}</td><td ${cell}>${kmN(x.km)}</td><td ${cell}>${x.gn}</td><td ${cell}>${x.vv}</td></tr>`).join('')}</table>
+ <p><b>${isP?'III':'IV'}. SỰ VIỆC, VI PHẠM PHÁT HIỆN VÀ KẾT QUẢ XỬ LÝ</b></p>
+ ${R.incidents.length?`<table><tr><th>TT</th><th>Thời gian</th><th>Loại</th><th>Nội dung</th><th>Vị trí (VN-2000 KTT ${S.cm}°)</th><th>Xử lý</th><th>Người ghi</th></tr>
+  ${R.incidents.map(({o,p},i)=>{const v=o.lat!=null?toVN2000(o.lat,o.lng,S.cm):null;return `<tr><td>${i+1}</td><td>${fTime(o.ts)}<br>${fDate(o.ts)}</td><td>${esc(typeOf(o.type)[2])}</td><td>${esc(o.note||'')}${o.qty?' ('+esc(o.qty)+')':''}${o.level!=='Bình thường'?'<br><i>'+esc(o.level)+'</i>':''}</td><td>${esc(o.place||'')}${v?'<br>X: '+v.x+'<br>Y: '+v.y:''}</td><td>${esc(o.action||'')}</td><td>${esc(o.by||p.leader||'')}</td></tr>`}).join('')}</table>`:'<p>Không phát hiện sự việc, vi phạm.</p>'}
+ ${R.types.length?`<p><b>${isP?'IV':'V'}. THỐNG KÊ THEO LOẠI GHI NHẬN:</b> ${R.types.map(x=>esc(x.t[2])+': '+x.n).join('; ')}.</p>`:''}
+ <table style="border:0;margin-top:24px"><tr><td style="border:0;text-align:center;width:50%"><b>${isU?'TRẠM TRƯỞNG':isP?'TRẠM TRƯỞNG':'GIÁM ĐỐC'}</b></td><td style="border:0;text-align:center"><b>NGƯỜI LẬP</b><br><br><br><br>${esc(S.name||'')}</td></tr></table>`;
+ setTimeout(()=>window.print(),200);
 }
 const b64=blob=>new Promise(r=>{const f=new FileReader();f.onload=()=>r(f.result);f.readAsDataURL(blob)});
-async function exportBundle(ids,name){
+async function exportBundle(ids,name,withPhotos=true){
  toast('Đang đóng gói…');const out={app:'tuantra_bvr',ver:1,exported:Date.now(),by:S.name,unit:S.unit,patrols:[],photos:[]};
- for(const id of ids){const p=await get('patrols',id);if(!p)continue;out.patrols.push(p);for(const ph of await photosOf(id)){const {blob,...rest}=ph;out.photos.push({...rest,data:await b64(blob)})}}
+ for(const id of ids){const p=await get('patrols',id);if(!p)continue;out.patrols.push(p);if(withPhotos)for(const ph of await photosOf(id)){const {blob,...rest}=ph;out.photos.push({...rest,data:await b64(blob)})}}
  const file=new File([JSON.stringify(out)],name+'.tuantra.json',{type:'application/json'});
  if(navigator.canShare&&navigator.canShare({files:[file]})&&confirm('Gửi gói dữ liệu qua Zalo/Email? (Hủy = lưu vào máy)')){try{await navigator.share({files:[file]});return}catch(e){}}
  download(file,file.name);
@@ -608,7 +722,7 @@ async function importBundle(file){
   toast(`Đã nhập ${np} chuyến, ${nf} ảnh từ ${j.by||'?'}`,4000);
  }catch(e){toast('Lỗi nhập: '+e.message,5000)}
 }
-$('#impIn').onchange=e=>{const f=e.target.files[0];if(f)importBundle(f).then(()=>show('log'))};
+$('#impIn').onchange=async e=>{const fs=[...e.target.files];for(const f of fs)await importBundle(f);if(fs.length)show('log')};
 
 /* ========== BÁO CÁO IN ========== */
 async function report(p){
