@@ -151,7 +151,7 @@ const TYPES=[
 const ACTS=['Không cần xử lý','Nhắc nhở tại chỗ','Lập biên bản','Báo cáo Trạm/Ban','Phối hợp Kiểm lâm','Báo chính quyền xã'];
 const VEH=['Đi bộ','Xe máy','Ô tô','Thuyền'];
 const typeOf=k=>TYPES.find(t=>t[0]===k)||TYPES[TYPES.length-1];
-const APP_VER='1.2 (09/11/2026)';
+const APP_VER='1.2.1 (09/11/2026)';
 const CREDIT_HTML='<div class="mu" style="margin-top:8px;font-size:12.5px">Thiết kế và Phát triển: <b>Nguyễn Văn Tuấn</b> – PTP. HC-BV&amp;PTR<br>BQL rừng phòng hộ Như Thanh</div>';
 
 /* ========== CÀI ĐẶT ========== */
@@ -312,7 +312,7 @@ function stamp(img,m){
 
 /* ========== TRẠNG THÁI & ĐIỀU HƯỚNG ========== */
 let curTab='patrol';
-function show(t){curTab=t;['patrol','map','photos','log','set'].forEach(k=>$('#tab-'+k).classList.toggle('hide',k!==t));document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));window.scrollTo(0,0);({patrol:renderPatrol,map:renderMapTab,photos:renderPhotos,log:renderLog,set:renderSet})[t]()}
+function show(t,noRender){curTab=t;['patrol','map','photos','log','set'].forEach(k=>$('#tab-'+k).classList.toggle('hide',k!==t));document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));window.scrollTo(0,0);if(noRender)return;({patrol:renderPatrol,map:renderMapTab,photos:renderPhotos,log:renderLog,set:renderSet})[t]()}
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{if(b.dataset.t==='cam')return openCam();show(b.dataset.t)});
 
 /* ========== TAB TUẦN TRA ========== */
@@ -392,7 +392,7 @@ async function endPatrol(){
  if(!confirm('Kết thúc chuyến tuần tra này?'))return;
  const p=active;p.end=Date.now();p.status='done';p.track=p.track.filter(s=>s.length);
  await put('patrols',p);active=null;localStorage.removeItem('tuantra_active');keepAwake(false);
- toast('Đã lưu chuyến tuần tra');show('log');openPatrol(p.id);
+ toast('Đã lưu chuyến tuần tra');show('log',true);openPatrol(p.id);
 }
 
 /* ========== CHỤP ẢNH & GHI NHẬN ========== */
@@ -626,7 +626,7 @@ async function drawMap(box,p){
   if(box._map){box._map.remove();box._map=null}box.innerHTML='';
   const sat=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'Esri'});
   const osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'});
-  const m=L.map(box,{layers:[sat],preferCanvas:true});box._map=m;const ov={};
+  const m=L.map(box,{layers:[sat],preferCanvas:true,center:[pts[0][0],pts[0][1]],zoom:15});box._map=m;const ov={};
   LAYERS.filter(l=>l.visible).forEach(l=>{ov[l.name]=leafLayer(l,true).addTo(m)});
   L.control.layers({'Ảnh vệ tinh':sat,'Bản đồ đường':osm},ov).addTo(m);
   segs.forEach(s=>L.polyline(s.map(x=>[x[0],x[1]]),{color:'#ffd200',weight:4}).addTo(m));
@@ -995,9 +995,9 @@ function leafLayer(ly,quiet){
    l.bindPopup('<b>'+esc(lb||ly.name)+'</b><div style="font-size:11px;color:#777">'+esc(ly.name)+'</div><table>'+ks.map(k=>'<tr><td>'+esc(k)+'</td><td>'+esc(p[k])+'</td></tr>').join('')+'</table>',{maxHeight:260})}});
 }
 // --- Tab Bản đồ ---
-let MM=null,mePt=null,meAcc=null,trkLine=null,follow=true;
+let MM=null,mePt=null,meAcc=null,trkLine=null,follow=true,mapTok=0;
 async function renderMapTab(){
- const el=$('#tab-map');
+ const el=$('#tab-map'),tok=++mapTok;
  if(MM){MM.remove();MM=null}
  el.innerHTML=`<div class="where" id="mWhere">📍 Đang chờ GPS…</div>
  <div class="map fullmap" id="mMap"></div>
@@ -1014,12 +1014,12 @@ async function renderMapTab(){
  $('#mImp').onclick=()=>$('#mapIn').click();
  $('#mExp').onclick=exportMapPack;$('#mCam').onclick=openCam;
  layerListHTML();
- const ok=await loadLeaflet();const box=$('#mMap');if(!box)return;
+ const ok=await loadLeaflet();const box=$('#mMap');if(!box||tok!==mapTok||curTab!=='map')return;
  if(!ok){box.innerHTML=svgMap(box.clientWidth||600,box.clientHeight||400);$('#mMe').onclick=$('#mAll').onclick=()=>{box.innerHTML=svgMap(box.clientWidth||600,box.clientHeight||400)};updMapPos();return}
  const sat=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,maxNativeZoom:18,attribution:'Esri'});
  const osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'});
  const blank=L.tileLayer('',{maxZoom:20});
- MM=L.map(box,{layers:[navigator.onLine?sat:blank],preferCanvas:true,zoomControl:true});
+ MM=L.map(box,{layers:[navigator.onLine?sat:blank],preferCanvas:true,zoomControl:true,center:fix?[fix.lat,fix.lng]:[19.62,105.55],zoom:12});
  L.control.layers({'Ảnh vệ tinh':sat,'Bản đồ đường':osm,'Không nền (mất mạng)':blank}).addTo(MM);
  L.control.scale({imperial:false}).addTo(MM);
  MM._ly={};LAYERS.forEach(l=>{if(l.visible)MM._ly[l.id]=leafLayer(l).addTo(MM)});
